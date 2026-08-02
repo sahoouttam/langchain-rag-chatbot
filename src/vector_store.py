@@ -1,3 +1,5 @@
+import hashlib
+
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -20,13 +22,31 @@ def get_vector_db() -> Chroma:
     )
 
 
+def _chunk_id(chunk) -> str:
+    source = chunk.metadata.get("source", "")
+    page = chunk.metadata.get("page", "")
+    raw = f"f{source}|{page}|{chunk.page_content}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def split_and_import(loader, vector_db: Chroma) -> int:
     chunks = _text_splitter.split_documents(loader.load())
     if not chunks:
         return 0
-    vector_db.add_documents(chunks)
-    print(f"Ingested {len(chunks)} chunk(s) from {loader}")
-    return len(chunks)
+
+    ids = [_chunk_id(chunk) for chunk in chunks]
+    existing_ids = set(vector_db.get(ids=ids)["ids"])
+
+    new_pairs = [(c, i) for c, i in zip(chunks, ids) if i not in existing_ids]
+    if not new_pairs:
+        print(f"No new chunks from {loader} (already ingested).")
+        return 0
+
+    new_chunks, new_ids = zip(*new_pairs)
+    vector_db.add_documents(list(new_chunks), ids=list(new_ids))
+    print(f"Ingested {len(new_chunks)} chunk(s) from {loader} "
+          f"({len(chunks) - len(new_chunks)} already existed).")
+    return len(new_chunks)
 
 
 def ingest_wikipedia(query: str, vector_db: Chroma) -> int:
